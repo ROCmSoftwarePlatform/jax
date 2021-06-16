@@ -402,6 +402,7 @@ void Getrf(hipStream_t stream, void** buffers, const char* opaque,
                                 SizeOfType(d.type) * d.batch * d.m * d.n,
                                 hipMemcpyDeviceToDevice, stream));
   }
+  
   ThrowIfError(hipStreamSynchronize(stream));
 
   std::cout << "REZA: this is inside Getrf right before it is being launched. "

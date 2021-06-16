@@ -312,6 +312,20 @@ void Getrf(cudaStream_t stream, void** buffers, const char* opaque,
         cudaMemcpyDeviceToDevice, stream));
   }
 
+  ThrowIfError(cudaStreamSynchronize(stream));
+
+  std::cout << "REZA: this is inside Getrf right before it is being launched. "
+               "The following is the input matrix:\n"
+            << std::endl;
+  float *reza_a = (float *)buffers[1];
+  for (int i = 0; i < d.m; ++i) {
+    for (int j = 0; j < d.n; ++j, ++reza_a) {
+      std::cout << *reza_a << "\t";
+    }
+    std::cout << std::endl;
+  }
+  std::cout << std::endl;
+
   int* ipiv = static_cast<int*>(buffers[2]);
   int* info = static_cast<int*>(buffers[3]);
   void* workspace = buffers[4];
@@ -322,10 +336,26 @@ void Getrf(cudaStream_t stream, void** buffers, const char* opaque,
         ThrowIfErrorStatus(cusolverDnSgetrf(handle.get(), d.m, d.n, a, d.m,
                                             static_cast<float*>(workspace),
                                             ipiv, info));
+
+        std::cout
+            << "REZA: this is inside Getrf right after it is being launched. "
+               "The following is the output matrix:\n"
+            << std::endl;
+        ThrowIfError(cudaStreamSynchronize(stream));
+        float *reza_a_out = (float *)buffers[1];
+        for (int i = 0; i < d.m; ++i) {
+          for (int j = 0; j < d.n; ++j, ++reza_a_out) {
+            std::cout << *reza_a_out << "\t";
+          }
+          std::cout << std::endl;
+        }
+        std::cout << std::endl;
+
         a += d.m * d.n;
         ipiv += std::min(d.m, d.n);
         ++info;
       }
+
       break;
     }
     case Type::F64: {
