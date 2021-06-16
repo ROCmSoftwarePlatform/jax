@@ -14,11 +14,15 @@
 
 import functools
 import operator
+import traceback
 
 import numpy as np
 
 from jaxlib import xla_client
 
+def print_callstack():
+  for line in traceback.format_stack():
+        print(line.strip())
 try:
   from jaxlib import rocblas_kernels
   for _name, _value in rocblas_kernels.registrations().items():
@@ -59,6 +63,8 @@ def trsm(c,
          conj_a=False,
          diag=False):
   """triangular solve"""
+  print("REZA-this is:")
+  print_callstack()
   b_shape = c.get_shape(b)
   dtype = b_shape.element_type()
   dims = b_shape.dimensions()
@@ -102,6 +108,8 @@ def trsm(c,
 
 def potrf(c, a, lower):
   """Cholesky decomposition."""
+  print("REZA-this is:")
+  print_callstack()
   a_shape = c.get_shape(a)
   dtype = a_shape.element_type()
   dims = a_shape.dimensions()
@@ -139,6 +147,8 @@ def potrf(c, a, lower):
 
 def getrf(c, a):
   """LU decomposition."""
+  print("REZA-this is:")
+  print_callstack()
   a_shape = c.get_shape(a)
   dtype = a_shape.element_type()
   dims = a_shape.dimensions()
@@ -178,6 +188,8 @@ def getrf(c, a):
 
 def geqrf(c, a):
   """QR decomposition."""
+  print("REZA-this is:")
+  print_callstack()
   a_shape = c.get_shape(a)
   dtype = a_shape.element_type()
   dims = a_shape.dimensions()
@@ -215,6 +227,8 @@ def geqrf(c, a):
 
 def orgqr(c, a, tau):
   """Product of elementary Householder reflections."""
+  print("REZA-this is:")
+  print_callstack()
   a_shape = c.get_shape(a)
   dtype = a_shape.element_type()
   dims = a_shape.dimensions()
@@ -252,12 +266,16 @@ def orgqr(c, a, tau):
 
 
 def syevd(c, a, lower=False):
+  print("REZA-this is")
+  print_callstack()
   raise NotImplementedError(
       "Symmetric (Hermitian) eigendecomposition is not yet implemented in ROCSolver")
 
 
 def gesvd(c, a, full_matrices=True, compute_uv=True):
   """Singular value decomposition."""
+  print("REZA-this is:")
+  print_callstack()
   a_shape = c.get_shape(a)
   dims = a_shape.dimensions()
   dtype = a_shape.element_type()

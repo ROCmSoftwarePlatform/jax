@@ -84,18 +84,26 @@ class X64ContextTests(jtu.JaxTestCase):
       self.skipTest("64-bit inverse not available on TPU")
     @partial(_maybe_jit, jit, static_argnums=1)
     def near_singular_inverse(key, N, eps):
-      X = random.uniform(key, (N, N))
+      import numpy as onp
+      np_x = onp.zeros((N, N), dtype=onp.float32)
+      for i in range(N):
+        for j in range(N):
+          np_x[i][j] = (i + j) / (2 * N - 1)
+      X = jnp.array(np_x)
+      #X = random.uniform(key, (N, N))    
       X = X.at[-1].mul(eps)
+      print("REZA-this is the new value of X:\n", X, X.dtype)
       return jnp.linalg.inv(X)
 
     key = random.PRNGKey(1701)
     eps = 1E-40
     N = 5
 
-    with enable_x64():
-      result_64 = near_singular_inverse(key, N, eps)
-      self.assertTrue(jnp.all(jnp.isfinite(result_64)))
+    # with enable_x64():
+    #   result_64 = near_singular_inverse(key, N, eps)
+    #   self.assertTrue(jnp.all(jnp.isfinite(result_64)))
 
+    print("REZA-context switched to fp32")
     with disable_x64():
       result_32 = near_singular_inverse(key, N, eps)
       self.assertTrue(jnp.all(~jnp.isfinite(result_32)))

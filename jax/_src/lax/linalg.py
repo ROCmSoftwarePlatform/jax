@@ -993,7 +993,7 @@ def _lu_cpu_gpu_translation_rule(getrf_impl, c, operand, backend):
   shape = c.get_shape(operand)
   batch_dims = shape.dimensions()[:-2]
   m = shape.dimensions()[-2]
-  lu, pivot, info = getrf_impl(c, operand)
+  lu, pivot, info = getrf_impl(c, operand)  # called in the way of inverse
   # Subtract 1 from the pivot to get 0-based indices.
   pivot = xops.Sub(pivot, xops.ConstantLiteral(c, np.array(1, np.int32)))
   ok = xops.Ge(info, xops.ConstantLiteral(c, np.array(0, np.int32)))
