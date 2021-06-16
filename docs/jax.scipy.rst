@@ -99,6 +99,8 @@ jax.scipy.special
    log_ndtr
    logit
    logsumexp
+   lpmn
+   lpmn_values
    multigammaln
    ndtr
    ndtri

@@ -50,7 +50,7 @@ from jax._src.util import (partial, unzip2, unzip3, safe_map, safe_zip,
 from jax.tree_util import (tree_flatten, tree_unflatten, treedef_is_leaf,
                            treedef_children, treedef_tuple, tree_multimap,
                            tree_leaves, tree_structure)
-from jax import ad_util
+from jax._src import ad_util
 from jax.config import config
 
 xops = xla_client.ops
@@ -151,7 +151,7 @@ def fori_loop(lower, upper, body_fun, init_val):
 
   .. code-block:: haskell
 
-    fori_loop :: Int -> Int -> ((int, a) -> a) -> a -> a
+    fori_loop :: Int -> Int -> ((Int, a) -> a) -> a -> a
 
   The semantics of ``fori_loop`` are given by this Python implementation::
 
@@ -2510,7 +2510,7 @@ def associative_scan(fn: Callable, elems, reverse: bool = False, axis: int = 0):
   if not all(int(elem.shape[axis]) == num_elems for elem in elems_flat[1:]):
     raise ValueError('Array inputs to associative_scan must have the same '
                      'first dimension. (saw: {})'
-                     .format([elems.shape for elem in elems_flat]))
+                     .format([elem.shape for elem in elems_flat]))
 
 
   # Summary of algorithm:

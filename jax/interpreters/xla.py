@@ -26,11 +26,11 @@ import numpy as np
 
 from ..config import config
 from .. import core
-from .. import ad_util
+from jax._src import ad_util
 from jax._src import dtypes
 from .. import linear_util as lu
 from jax._src import source_info_util
-from ..abstract_arrays import (make_shaped_array, array_types)
+from jax._src.abstract_arrays import (make_shaped_array, array_types)
 from ..core import (ConcreteArray, ShapedArray, AbstractToken,
                     Literal, pp_eqn_compact, raise_to_shaped, abstract_token)
 from jax._src.pprint_util import pp
@@ -78,6 +78,20 @@ def _make_array_shape(a):
     return (xc.Shape.array_shape(np.dtype('bool'), a.shape),)
   else:
     return (xc.Shape.array_shape(a.dtype, a.shape),)
+
+tracebacks = {}
+def make_op_metadata(primitive: core.Primitive,
+                     params: Dict, *,
+                     name_stack: str = "",
+                     source_info: Optional[source_info_util.Traceback] = None
+                     ) -> xc.OpMetadata:
+  tracebacks[str(pp(name_stack) >> pp_eqn_compact(primitive.name, params))] = source_info
+  frame = source_info_util.user_frame(source_info) if source_info else None
+  return xc.OpMetadata(
+        op_type=primitive.name,
+        op_name=str(pp(name_stack) >> pp_eqn_compact(primitive.name, params)),
+        source_file=frame.file_name if frame else None,
+        source_line=frame.line_num if frame else None)
 
 ### handlers
 
@@ -306,9 +320,8 @@ def _device_from_arg_devices(devices: Sequence[Optional[Device]]) -> Optional[De
 @cache()
 def primitive_computation(prim, axis_env, backend, tuple_args, *avals, **params):
   c = xb.make_computation_builder(f"primitive_computation_{prim.name}")
-  c.set_op_metadata(xc.OpMetadata(
-      op_type=prim.name,
-      op_name=str(pp_eqn_compact(prim.name, params))))
+  op_metadata = make_op_metadata(prim, params)
+  c.set_op_metadata(op_metadata)
   platform = xb.get_backend(backend).platform
   xla_args, _ = _xla_callable_args(c, avals, tuple_args)
   # return val always set as a side-effect on c
@@ -429,13 +442,10 @@ def jaxpr_subcomp(c, jaxpr, backend, axis_env, consts, name_stack, *args):
   _partitionmap(write, jaxpr.constvars, consts)
   _partitionmap(write, jaxpr.invars, args)
   for eqn in jaxpr.eqns:
-    frame = source_info_util.user_frame(eqn.source_info)
-    c.set_op_metadata(xc.OpMetadata(
-        op_type=eqn.primitive.name,
-        op_name=str(pp(name_stack) >> pp_eqn_compact(
-            eqn.primitive.name, eqn.params)),
-        source_file=frame.file_name if frame else None,
-        source_line=frame.line_num if frame else None))
+    op_metadata = make_op_metadata(
+        eqn.primitive, eqn.params, name_stack=name_stack,
+        source_info=eqn.source_info)
+    c.set_op_metadata(op_metadata)
     in_nodes = _flatmap(read, eqn.invars)
     # TODO(jakevdp): migrate `translations` table to `translations_with_avals`
     if eqn.primitive in backend_specific_translations[platform]:
@@ -1043,6 +1053,7 @@ core.pytype_aval_mappings[Token] = lambda _: abstract_token
 xla_shape_handlers[AbstractToken] = lambda _: (xc.Shape.token_shape(),)
 xla_result_handlers[AbstractToken] = lambda _, __: lambda _: token
 canonicalize_dtype_handlers[Token] = identity
+device_put_handlers[Token] = lambda x, _: (x,)
 
 
 def _forward_method(attrname, self, fun, *args):

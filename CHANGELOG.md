@@ -8,23 +8,47 @@ Remember to align the itemized text with the first line of an item within a list
 PLEASE REMEMBER TO CHANGE THE '..master' WITH AN ACTUAL TAG in GITHUB LINK.
 -->
 
-## jax 0.2.14 (unreleased)
-* [GitHub commits](https://github.com/google/jax/compare/jax-v0.2.13...master).
+## jax 0.2.15 (unreleased)
+* [GitHub commits](https://github.com/google/jax/compare/jax-v0.2.14...master).
 * New features:
+  * The {func}`jax2tf.convert` supports inequalities and min/max for booleans
+    ({jax-issue}`#6956`).
 
 * Breaking changes:
+  * Support for NumPy 1.16 has been dropped, per the
+    [deprecation policy](https://jax.readthedocs.io/en/latest/deprecation.html).
 
 * Bug fixes:
+  * Fixed bug that prevented round-tripping from JAX to TF and back:
+    `jax2tf.call_tf(jax2tf.convert)` ({jax-issue}`#6947`).
+ 
+## jax 0.2.14 (June 10 2021)
+* [GitHub commits](https://github.com/google/jax/compare/jax-v0.2.13...jax-v0.2.14).
+* New features:
+  * The {func}`jax2tf.convert` now has support for `pjit` and `sharded_jit`.
+  * A new configuration option JAX_TRACEBACK_FILTERING controls how JAX filters
+    tracebacks.
+  * A new traceback filtering mode using `__tracebackhide__` is now enabled by
+    default in sufficiently recent versions of IPython.
+  * The {func}`jax2tf.convert` supports shape polymorphism even when the
+    unknown dimensions are used in arithmetic operations, e.g., `jnp.reshape(-1)`
+    ({jax-issue}`#6827`).
+  * The {func}`jax2tf.convert` generates custom attributes with location information
+   in TF ops. The code that XLA generates after jax2tf
+   has the same location information as JAX/XLA.
+
+* Bug fixes:
+  * The {func}`jax2tf.convert` now ensures that it uses the same typing rules
+    for Python scalars and for choosing 32-bit vs. 64-bit computations
+    as JAX ({jax-issue}`#6883`).
   * The {func}`jax2tf.convert` now scopes the `enable_xla` conversion parameter
     properly to apply only during the just-in-time conversion
     ({jax-issue}`#6720`).
-  * Fixed assertion failure in {func}`jax2tf.call_tf` when used with captured
-    `tf.Variable` ({jax-issue}`#6572`).
-
-* Bug fixes:
   * The {func}`jax2tf.convert` now converts `lax.dot_general` using the
     `XlaDot` TensorFlow op, for better fidelity w.r.t. JAX numerical precision
     ({jax-issue}`#6717`).
+  * The {func}`jax2tf.convert` now has support for inequality comparisons and
+    min/max for complex numbers ({jax-issue}`#6892`).
 
 ## jaxlib 0.1.67 (unreleased)
 

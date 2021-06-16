@@ -47,7 +47,7 @@ from absl import testing
 import jax
 from jax import config
 from jax import dtypes
-from jax import ad_util
+from jax._src import ad_util
 from jax import test_util as jtu
 from jax import lax
 from jax import numpy as jnp
@@ -718,32 +718,36 @@ for dtype in jtu.dtypes.all:
       shape=shape,
       dtype=dtype)
 
-_LAX_COMPARATORS = (lax.eq_p, lax.ge_p, lax.gt_p, lax.le_p, lax.lt_p, lax.ne_p)
+_LAX_COMPARATORS = dict(eq=jnp.equal, ne=jnp.not_equal,
+                        ge=jnp.greater_equal, gt=jnp.greater,
+                        le=jnp.less_equal, lt=jnp.less)
 
 
 def _make_comparator_harness(name,
                              *,
                              dtype=np.float32,
                              op=lax.eq_p,
+                             op_name="eq",
                              lhs_shape=(),
                              rhs_shape=()):
   define(
-      op.name,
+      op_name,
       f"{name}_lhs={jtu.format_shape_dtype_string(lhs_shape, dtype)}_rhs={jtu.format_shape_dtype_string(rhs_shape, dtype)}",
-      lambda *args: op.bind(*args),
+      lambda *args: op(*args),
       [RandArg(lhs_shape, dtype),
        RandArg(rhs_shape, dtype)],
       op=op,
+      op_name=op_name,
       lhs_shape=lhs_shape,
       rhs_shape=rhs_shape,
       dtype=dtype)
 
 
-for op in _LAX_COMPARATORS:
+for op_name, op in _LAX_COMPARATORS.items():
   for dtype in (jtu.dtypes.all if op in [lax.eq_p, lax.ne_p] else
-                set(jtu.dtypes.all) - set(jtu.dtypes.complex)):
+                set(jtu.dtypes.all)):
     # Validate dtypes
-    _make_comparator_harness("dtypes", dtype=dtype, op=op)
+    _make_comparator_harness("dtypes", dtype=dtype, op=op, op_name=op_name)
 
   # Validate broadcasting behavior
   for lhs_shape, rhs_shape in [
@@ -751,7 +755,8 @@ for op in _LAX_COMPARATORS:
       ((1, 2), (3, 2)),  # broadcast along specific axis
   ]:
     _make_comparator_harness(
-        "broadcasting", lhs_shape=lhs_shape, rhs_shape=rhs_shape, op=op)
+        "broadcasting", lhs_shape=lhs_shape, rhs_shape=rhs_shape,
+        op=op, op_name=op_name)
 
 for dtype in jtu.dtypes.all:
   shape = (3, 4, 5)
@@ -917,6 +922,7 @@ for prim in [lax.div_p, lax.rem_p]:
 def _make_binary_elementwise_harnesses(prim,
                                        dtypes,
                                        default_dtype=np.float32,
+                                       broadcasting_dtypes=None,
                                        jax_unimplemented=lambda **kwargs: []):
 
   def _make(name, *, shapes=((20, 20), (20, 20)), dtype):
@@ -931,15 +937,18 @@ def _make_binary_elementwise_harnesses(prim,
         prim=prim,
         dtype=dtype,
         shapes=shapes)
-
-  return (tuple(  # Validate dtypes
-      _make("dtypes", dtype=dtype)
-      for dtype in dtypes) + tuple(  # Validate broadcasting
-          _make("broadcasting", dtype=default_dtype, shapes=shapes)
-          for shapes in [
+  broadcasting_dtypes = broadcasting_dtypes or (default_dtype,)
+  return (
+      # Validate dtypes
+      tuple(_make("dtypes", dtype=dtype) for dtype in dtypes) +
+      # Validate broadcasting
+      tuple(_make("broadcasting", dtype=dtype, shapes=shapes)
+            for shapes in [
               ((20, 20), (1, 20)),  # broadcasting rhs
               ((1, 20), (20, 20)),  # broadcasting lhs
-          ]))
+            ]
+            for dtype in broadcasting_dtypes)
+  )
 
 
 _make_binary_elementwise_harnesses(
@@ -1004,7 +1013,9 @@ _min_max_special_cases = tuple(
                      (np.array([-np.inf, -np.inf], dtype=dtype),
                       np.array([np.nan, np.nan], dtype=dtype))])
 
-_make_binary_elementwise_harnesses(prim=lax.min_p, dtypes=jtu.dtypes.all)
+_make_binary_elementwise_harnesses(
+    prim=lax.min_p, dtypes=jtu.dtypes.all,
+    broadcasting_dtypes=(np.float32, np.complex64, np.complex128))
 # Validate special cases
 for lhs, rhs in _min_max_special_cases:
   define(
@@ -1014,7 +1025,9 @@ for lhs, rhs in _min_max_special_cases:
       prim=lax.min_p,
       dtype=lhs.dtype)
 
-_make_binary_elementwise_harnesses(prim=lax.max_p, dtypes=jtu.dtypes.all)
+_make_binary_elementwise_harnesses(
+    prim=lax.max_p, dtypes=jtu.dtypes.all,
+    broadcasting_dtypes=(np.float32, np.complex64, np.complex128))
 # Validate special cases
 for lhs, rhs in _min_max_special_cases:
   define(
@@ -1189,7 +1202,11 @@ def _make_scatter_harness(name,
               "unimplemented",
               devices="tpu",
               dtypes=np.complex64,
-              enabled=(f_lax in [lax.scatter_max, lax.scatter_min]))
+              enabled=(f_lax in [lax.scatter_max, lax.scatter_min])),
+          Limitation(
+              "unimplemented",
+              dtypes=np.bool_,
+              enabled=(f_lax in [lax.scatter_add, lax.scatter_mul])),
       ],
       f_lax=f_lax,
       shape=shape,
@@ -1206,8 +1223,8 @@ for dtype in jtu.dtypes.all:
   for f_lax in [
       lax.scatter_add, lax.scatter_mul, lax.scatter_max, lax.scatter_min
   ]:
-    if f_lax in [lax.scatter_add, lax.scatter_mul] and dtype == np.bool_:
-      continue
+    #if f_lax in [lax.scatter_add, lax.scatter_mul] and dtype == np.bool_:
+    #  continue
     _make_scatter_harness("dtypes", dtype=dtype, f_lax=f_lax)
 
 # Validate f_lax/update_jaxpr
@@ -1649,10 +1666,6 @@ for dtype in jtu.dtypes.all_inexact:
           ],
           jax_unimplemented=[
               Limitation(
-                  "complex eigh not supported ",
-                  devices="tpu",
-                  dtypes=[np.complex64, np.complex128]),
-              Limitation(
                   "unimplemented",
                   devices=("cpu", "gpu"),
                   dtypes=[np.float16, dtypes.bfloat16]),
@@ -1914,20 +1927,22 @@ def _make_dynamic_slice_harness(name,
                                 start_indices=(1,),
                                 limit_indices=(2,),
                                 dtype=np.float32):
-  define(
-      lax.dynamic_slice_p,
-      f"{name}_a={jtu.format_shape_dtype_string(shape, dtype)}_start_indices={start_indices}_limit_indices={limit_indices}",
-      # type: ignore
-      lax.dynamic_slice,
-      [
-          RandArg(shape, dtype),  # type: ignore
-          np.array(list(start_indices)),
-          StaticArg(tuple(map(operator.sub, limit_indices, start_indices)))
-      ],  # type: ignore
-      dtype=dtype,
-      shape=shape,  # type: ignore
-      start_indices=start_indices,  # type: ignore
-      limit_indices=limit_indices)  # type: ignore
+  for enable_xla in [False, True]:
+    define(
+        lax.dynamic_slice_p,
+        f"{name}_a={jtu.format_shape_dtype_string(shape, dtype)}_start_indices={start_indices}_limit_indices={limit_indices}_enablexla={enable_xla}",
+        # type: ignore
+        lax.dynamic_slice,
+        [
+            RandArg(shape, dtype),  # type: ignore
+            np.array(list(start_indices)),
+            StaticArg(tuple(map(operator.sub, limit_indices, start_indices)))
+        ],  # type: ignore
+        dtype=dtype,
+        shape=shape,  # type: ignore
+        start_indices=start_indices,  # type: ignore
+        limit_indices=limit_indices,  # type: ignore
+        enable_xla=enable_xla)
 
 
 # Test first all dtypes
@@ -2336,10 +2351,15 @@ def _make_clamp_harness(name,
       min_shape=min_arr.shape,
       operand_shape=operand_shape,
       max_shape=max_arr.shape,
-      dtype=dtype)
+      dtype=dtype,
+      jax_unimplemented=[
+          Limitation(
+              "unimplemented",
+              dtypes=[np.bool_, np.complex64, np.complex128])],
+  )
 
 
-for dtype in set(jtu.dtypes.all) - set(jtu.dtypes.complex + [np.bool_]):
+for dtype in set(jtu.dtypes.all):
   _make_clamp_harness("dtypes", dtype=dtype)
 
 # Validate broadcasting of min/max arrays

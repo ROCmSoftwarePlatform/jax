@@ -1064,7 +1064,7 @@ def sinc(x):
   x, = _promote_dtypes_inexact(x)
   eq_zero = lax.eq(x, lax._const(x, 0))
   pi_x = lax.mul(lax._const(x, pi), x)
-  safe_pi_x = where(eq_zero, lax._const(x, 0), pi_x)
+  safe_pi_x = where(eq_zero, lax._const(x, 1), pi_x)
   return where(eq_zero, _sinc_maclaurin(0, pi_x),
                lax.div(lax.sin(safe_pi_x), safe_pi_x))
 
@@ -1416,7 +1416,8 @@ def unravel_index(indices, shape):
   cumulative_sizes = cumulative_sizes.reshape([-1] + [1] * indices.ndim)
   clipped_indices = expand_dims(clipped_indices, axis=0)
   idx = clipped_indices % cumulative_sizes[:-1] // cumulative_sizes[1:]
-  return tuple(idx)
+  # TODO(jakevdp): return tuple(idx) once it behaves properly (#3821)
+  return tuple(lax.index_in_dim(idx, i, keepdims=False) for i in range(idx.shape[0]))
 
 @_wraps(np.resize)
 def resize(a, new_shape):
@@ -1588,13 +1589,25 @@ def setdiff1d(ar1, ar2, assume_unique=False):
   return ar1[idx]
 
 
-@_wraps(np.union1d)
-def union1d(ar1, ar2):
-  ar1 = core.concrete_or_error(asarray, ar1, "The error arose in union1d()")
-  ar2 = core.concrete_or_error(asarray, ar2, "The error arose in union1d()")
+_UNION1D_DOC = """\
+Because the size of the output of ``union1d`` is data-dependent, the function is not
+typically compatible with JIT. The JAX version adds the optional `size` argument which
+specifies the size of the output array: it must be specified statically for ``jnp.union1d``
+to be traced. If specified, the first `size` unique elements will be returned; if there are
+fewer unique elements than `size` indicates, the return value will be padded with
+the minimum value of the union."""
 
-  conc = concatenate((ar1, ar2), axis=None)
-  return unique(conc)
+@_wraps(np.union1d, lax_description=_UNION1D_DOC)
+def union1d(ar1, ar2, *, size=None):
+  # TODO(jakevdp): call _check_arraylike on inputs
+  ar1 = asarray(ar1)
+  ar2 = asarray(ar2)
+  if size is None:
+    ar1 = core.concrete_or_error(None, ar1, "The error arose in union1d()")
+    ar2 = core.concrete_or_error(None, ar2, "The error arose in union1d()")
+  else:
+    size = core.concrete_or_error(operator.index, size, "The error arose in union1d()")
+  return unique(concatenate((ar1, ar2), axis=None), size=size)
 
 
 @_wraps(np.setxor1d, lax_description="""
@@ -1703,14 +1716,19 @@ _WHERE_DOC = """\
 At present, JAX does not support JIT-compilation of the single-argument form
 of :py:func:`jax.numpy.where` because its output shape is data-dependent. The
 three-argument form does not have a data-dependent shape and can be JIT-compiled
-successfully.
+successfully. Alternatively, you can specify the optional ``size`` keyword:
+if specified, the first ``size`` True elements will be returned; if there
+are fewer True elements than ``size`` indicates, the index arrays will be
+padded with zeros.
 """
 
 @_wraps(np.where, update_doc=False, lax_description=_WHERE_DOC)
-def where(condition, x=None, y=None):
+def where(condition, x=None, y=None, *, size=None):
   if x is None and y is None:
-    return nonzero(asarray(condition))
+    return nonzero(asarray(condition), size=size)
   else:
+    if size is not None:
+      raise ValueError("size argument cannot be used in three-term where function.")
     return _where(condition, x, y)
 
 
@@ -2305,9 +2323,9 @@ def nonzero(a, *, size=None):
   strides = np.cumprod(a.shape[::-1])[::-1] // a.shape
   return tuple((flat_indices // stride) % size for stride, size in zip(strides, a.shape))
 
-@_wraps(np.flatnonzero)
-def flatnonzero(a):
-  return nonzero(ravel(a))[0]
+@_wraps(np.flatnonzero, lax_description=_NONZERO_DOC)
+def flatnonzero(a, *, size=None):
+  return nonzero(ravel(a), size=size)[0]
 
 
 def _nan_reduction(a, name, jnp_reduction, init_val, nan_if_all_nan,
@@ -2783,15 +2801,19 @@ def stack(arrays, axis: int =0, out=None):
     raise ValueError("Need at least one array to stack.")
   if out is not None:
     raise NotImplementedError("The 'out' argument to jnp.stack is not supported.")
-  _check_arraylike("stack", *arrays)
-  shape0 = shape(arrays[0])
-  axis = _canonicalize_axis(axis, len(shape0) + 1)
-  new_arrays = []
-  for a in arrays:
-    if shape(a) != shape0:
-      raise ValueError("All input arrays must have the same shape.")
-    new_arrays.append(expand_dims(a, axis))
-  return concatenate(new_arrays, axis=axis)
+  if isinstance(arrays, ndarray):
+    axis = _canonicalize_axis(axis, arrays.ndim)
+    return concatenate(expand_dims(arrays, axis + 1), axis=axis)
+  else:
+    _check_arraylike("stack", *arrays)
+    shape0 = shape(arrays[0])
+    axis = _canonicalize_axis(axis, len(shape0) + 1)
+    new_arrays = []
+    for a in arrays:
+      if shape(a) != shape0:
+        raise ValueError("All input arrays must have the same shape.")
+      new_arrays.append(expand_dims(a, axis))
+    return concatenate(new_arrays, axis=axis)
 
 @_wraps(np.tile)
 def tile(A, reps):
@@ -2800,15 +2822,32 @@ def tile(A, reps):
     iter(reps)
   except TypeError:
     reps = (reps,)
-  reps = tuple(operator.index(rep) for rep in reps)
+  reps = tuple(operator.index(rep) if core.is_constant_dim(rep) else rep
+               for rep in reps)
   A_shape = (1,) * (len(reps) - ndim(A)) + shape(A)
   reps = (1,) * (len(A_shape) - len(reps)) + reps
   result = broadcast_to(reshape(A, [j for i in A_shape for j in [1, i]]),
                         [k for pair in zip(reps, A_shape) for k in pair])
   return reshape(result, tuple(np.multiply(A_shape, reps)))
 
+def _concatenate_array(arr, axis: int):
+  # Fast path for concatenation when the input is an ndarray rather than a list.
+  arr = asarray(arr)
+  if arr.ndim == 0 or arr.shape[0] == 0:
+    raise ValueError("Need at least one array to concatenate.")
+  if axis is None:
+    return lax.reshape(arr, (arr.size,))
+  if arr.ndim == 1:
+    raise ValueError("Zero-dimensional arrays cannot be concatenated.")
+  axis = _canonicalize_axis(axis, arr.ndim - 1)
+  shape = arr.shape[1:axis + 1] + (arr.shape[0] * arr.shape[axis + 1],) + arr.shape[axis + 2:]
+  dimensions = [*range(1, axis + 1), 0, *range(axis + 1, arr.ndim)]
+  return lax.reshape(arr, shape, dimensions)
+
 @_wraps(np.concatenate)
 def concatenate(arrays, axis: int = 0):
+  if isinstance(arrays, ndarray):
+    return _concatenate_array(arrays, axis)
   _check_arraylike("concatenate", *arrays)
   if not len(arrays):
     raise ValueError("Need at least one array to concatenate.")
@@ -2833,32 +2872,41 @@ def concatenate(arrays, axis: int = 0):
 
 @_wraps(np.vstack)
 def vstack(tup):
-  return concatenate([atleast_2d(m) for m in tup], axis=0)
+  if isinstance(tup, ndarray):
+    arrs = jax.vmap(atleast_2d)(tup)
+  else:
+    arrs = [atleast_2d(m) for m in tup]
+  return concatenate(arrs, axis=0)
 row_stack = vstack
 
 
 @_wraps(np.hstack)
 def hstack(tup):
-  arrs = [atleast_1d(m) for m in tup]
-  if arrs[0].ndim == 1:
-    return concatenate(arrs, 0)
-  return concatenate(arrs, 1)
+  if isinstance(tup, ndarray):
+    arrs = jax.vmap(atleast_1d)(tup)
+    arr0_ndim = arrs.ndim - 1
+  else:
+    arrs = [atleast_1d(m) for m in tup]
+    arr0_ndim = arrs[0].ndim
+  return concatenate(arrs, axis=0 if arr0_ndim == 1 else 1)
 
 
 @_wraps(np.dstack)
 def dstack(tup):
-  return concatenate([atleast_3d(m) for m in tup], axis=2)
+  if isinstance(tup, ndarray):
+    arrs = jax.vmap(atleast_3d)(tup)
+  else:
+    arrs = [atleast_3d(m) for m in tup]
+  return concatenate(arrs, axis=2)
 
 
 @_wraps(np.column_stack)
 def column_stack(tup):
-  arrays = []
-  for v in tup:
-    arr = asarray(v)
-    if arr.ndim < 2:
-      arr = atleast_2d(arr).T
-    arrays.append(arr)
-  return concatenate(arrays, 1)
+  if isinstance(tup, ndarray):
+    arrs = jax.vmap(lambda x: atleast_2d(x).T)(tup) if tup.ndim < 3 else tup
+  else:
+    arrs = [atleast_2d(arr).T if arr.ndim < 2 else arr for arr in map(asarray, tup)]
+  return concatenate(arrs, 1)
 
 
 @_wraps(np.choose, skip_params=['out'])
@@ -4460,10 +4508,18 @@ def vander(x, N=None, increasing=False):
 
 ### Misc
 
+_ARGWHERE_DOC = """\
+Because the size of the output of ``argwhere`` is data-dependent, the function is not
+typically compatible with JIT. The JAX version adds the optional ``size`` argument, which
+specifies the size of the leading dimension of the output - it must be specified statically
+for ``jnp.argwhere`` to be traced. If ``size`` is specified, the indices of the first ``size``
+True elements will be returned; if there are fewer nonzero elements than `size` indicates,
+the index arrays will be zero-padded.
+"""
 
-@_wraps(np.argwhere)
-def argwhere(a):
-  result = transpose(vstack(nonzero(a)))
+@_wraps(np.argwhere, lax_description=_ARGWHERE_DOC)
+def argwhere(a, *, size=None):
+  result = transpose(vstack(nonzero(a, size=size)))
   if ndim(a) == 0:
     return result[:0].reshape(result.shape[0], 0)
   return result.reshape(result.shape[0], ndim(a))
@@ -4803,8 +4859,7 @@ def _unique1d_sorted_mask(ar, optional_indices=False):
   ar = asarray(ar).flatten()
 
   if optional_indices:
-    perm = ar.argsort()
-    aux = ar[perm]
+    aux, perm = lax.sort_key_val(ar, lax.iota(int, len(ar)))
   else:
     perm = np.empty(0, dtype=int)
     aux = ar.sort()
@@ -4814,22 +4869,30 @@ def _unique1d_sorted_mask(ar, optional_indices=False):
   return aux, mask, perm
 
 def _unique1d(ar, return_index=False, return_inverse=False,
-              return_counts=False):
+              return_counts=False, size=None):
   """
   Find the unique elements of an array, ignoring shape.
   """
-  aux, mask, perm = _unique1d_sorted_mask(ar, return_index or return_inverse)
+  if ar.size == 0 and size is not None and size > 0:
+    raise ValueError("jnp.unique(): Cannot pass nonzero size for zero-sized array.")
 
-  ret = (aux[mask],)
+  aux, mask, perm = _unique1d_sorted_mask(ar, return_index or return_inverse)
+  ind = mask if size is None else nonzero(mask, size=size)
+
+  ret = (aux[ind],)
   if return_index:
-    ret += (perm[mask],)
+    ret += (perm[ind],)
   if return_inverse:
     imask = cumsum(mask) - 1
     inv_idx = zeros(mask.shape, dtype=dtypes.canonicalize_dtype(int_))
     inv_idx = inv_idx.at[perm].set(imask)
     ret += (inv_idx,)
   if return_counts:
-    idx = concatenate(nonzero(mask) + (array([mask.size]),))
+    if size is None:
+      idx = append(nonzero(mask)[0], mask.size)
+    else:
+      idx = nonzero(mask, size=size + 1)[0]
+      idx = idx.at[1:].set(where(idx[1:], idx[1:], mask.size))
     ret += (diff(idx),)
 
   return ret
@@ -4883,13 +4946,34 @@ def _unique_axis(ar, axis, return_index=False, return_inverse=False,
 
   return ret
 
-@_wraps(np.unique, skip_params=['axis'])
+_UNIQUE_DOC = """\
+Because the size of the output of ``unique`` is data-dependent, the function is not
+typically compatible with JIT. The JAX version adds the optional `size` argument which
+specifies the size of the data-dependent output arrays: it must be specified statically for
+``jnp.unique`` to be traced. If specified, the first `size` unique elements will be returned;
+if there are fewer unique elements than `size` indicates, the return value will be padded with
+the minimum value in the input array.
+
+The `size` cannot currently be used with the `axis` argument."""
+
+
+@_wraps(np.unique, skip_params=['axis'], lax_description=_UNIQUE_DOC)
 def unique(ar, return_index=False, return_inverse=False,
-           return_counts=False, axis: Optional[int] = None):
-  ar = core.concrete_or_error(asarray, ar, "The error arose in jnp.unique()")
+           return_counts=False, axis: Optional[int] = None, *, size=None):
+  # TODO(jakevdp): call _check_arraylike on input.
+  if axis is not None and size is not None:
+    # TODO(jakevdp): implement size & axis together.
+    raise NotImplementedError("jnp.unique `size` and `axis` arguments cannot be used together.")
+
+  ar = asarray(ar)
+
+  if size is None:
+    ar = core.concrete_or_error(None, ar, "The error arose for the first argument of jnp.unique()")
+  else:
+    size = core.concrete_or_error(operator.index, size, "The error arose for the size argument of jnp.unique()")
 
   if axis is None:
-    ret = _unique1d(ar, return_index, return_inverse, return_counts)
+    ret = _unique1d(ar, return_index, return_inverse, return_counts, size=size)
   else:
     ret = _unique_axis(ar, axis, return_index, return_inverse, return_counts)
 
@@ -4921,7 +5005,9 @@ def _gather(arr, treedef, static_idx, dynamic_idx):
   # We avoid generating a gather when indexer.gather_indices.size is empty.
   if not core.is_empty_shape(indexer.gather_indices.shape):
     y = lax.gather(y, indexer.gather_indices, indexer.dnums,
-                   indexer.gather_slice_shape)
+                   indexer.gather_slice_shape,
+                   unique_indices=indexer.unique_indices,
+                   indices_are_sorted=indexer.indices_are_sorted)
 
   # Reverses axes with negative strides.
   if indexer.reversed_y_dims:
@@ -4942,6 +5028,12 @@ _Indexer = collections.namedtuple("_Indexer", [
 
   # A GatherDimensionNumbers object describing the gather to perform.
   "dnums",
+
+  # Are the gather_indices known to be non-overlapping and/or sorted?
+  # (In practice, these translate to "there no advanced indices", because
+  # only advanced indices could lead to index repetition.)
+  "unique_indices",
+  "indices_are_sorted",
 
   # Slice dimensions that have negative strides, and so must be reversed after
   # the gather.
@@ -5182,7 +5274,9 @@ def _index_to_gather(x_shape, idx, normalize_indices=True):
     gather_slice_shape=gather_slice_shape,
     reversed_y_dims=reversed_y_dims,
     dnums=dnums,
-    gather_indices=gather_indices_array)
+    gather_indices=gather_indices_array,
+    unique_indices=advanced_indexes is None,
+    indices_are_sorted=advanced_indexes is None)
 
 def _should_unpack_list_index(x):
   """Helper for _eliminate_deprecated_list_indexing."""
